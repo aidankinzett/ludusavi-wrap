@@ -666,13 +666,6 @@ pub async fn run_exe_in_prefix(
     .await
 }
 
-/// Overall ceiling on a [`run_exe_in_prefix_core`] run. An update installer is
-/// interactive and can legitimately take a long time (large downloads, a user
-/// walking away mid-wizard), so the budget is far more generous than the
-/// winetricks one — it's only here so a wedged umu-run / wineserver can't hold
-/// the per-game run lock forever and block every later launch of that game.
-const RUN_EXE_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
-
 /// Validate a user-picked executable path for [`run_exe_in_prefix_core`]: it must
 /// be a non-empty path to an existing file with an `.exe` extension. Split out
 /// (pure, no side effects) so it's unit-testable without acquiring the run lock.
@@ -710,7 +703,7 @@ pub async fn run_exe_in_prefix_core(
     umu_run_path: &str,
     default_proton_path: &str,
 ) -> AppResult<String> {
-    if cfg!(windows) {
+    if !cfg!(target_os = "linux") {
         return Err(AppError::Other(
             "Running an executable through Proton is Linux-only — on Windows, run the installer directly.".into(),
         ));
@@ -758,11 +751,14 @@ pub async fn run_exe_in_prefix_core(
     // Go through the shared launch primitive: strip-appimage-env, cwd at the
     // exe's folder, umu env, block until exit. WINE_LARGE_ADDRESS_AWARE mirrors
     // the guided installer — patch installers decompress large archives in
-    // 32-bit Wine and hit false "not enough memory" errors without it. Bounded
-    // by RUN_EXE_TIMEOUT so a wedged umu-run can't pin the run lock forever;
-    // on timeout we return and drop `_run_lock`, freeing later launches (the
-    // lingering child, if any, is reaped by the OS when Spool exits).
-    let run = crate::process::run_game(
+    // 32-bit Wine and hit false "not enough memory" errors without it.
+    //
+    // No timeout: an update installer is interactive and can legitimately run
+    // as long as the user takes. The per-game run lock is held for the whole
+    // installer lifetime — same as the guided installer (`guided_install.rs`) —
+    // so a launch or disk-wipe can't race a patch that's still writing. If umu
+    // wedges, quitting Spool releases the lock (the OS frees it on exit).
+    let result = crate::process::run_game(
         &exe,
         crate::process::LaunchSpec::Proton {
             umu_run: &umu_run,
@@ -772,17 +768,8 @@ pub async fn run_exe_in_prefix_core(
             extra_args: &[],
             extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
         },
-    );
-    let result = match tokio::time::timeout(RUN_EXE_TIMEOUT, run).await {
-        Ok(res) => res?,
-        Err(_) => {
-            tracing::warn!(game_id, exe = %exe.display(), "run exe in prefix timed out");
-            return Err(AppError::Other(format!(
-                "{name} is still running after {} hours — giving up so it doesn't block launching this game. If it's genuinely still working, let it finish and don't launch the game yet.",
-                RUN_EXE_TIMEOUT.as_secs() / 3600
-            )));
-        }
-    };
+    )
+    .await?;
 
     // The installer actually ran. Only treat it as a failure when `run_game`
     // captured a crash hint (a non-zero exit within the first few seconds — a

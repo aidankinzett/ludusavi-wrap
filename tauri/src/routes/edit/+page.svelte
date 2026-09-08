@@ -108,6 +108,17 @@
     });
   }
 
+  // The winetricks / "run an installer" helpers act on the *saved* Wine prefix
+  // and Proton version (the backend reloads them from the library by id). If the
+  // user has edited either field without saving, those helpers would target the
+  // wrong prefix — so they're disabled until the launch settings are saved.
+  const launchSettingsDirty = $derived(
+    !!form &&
+      !!original &&
+      ((form.wine_prefix_path ?? '') !== (original.wine_prefix_path ?? '') ||
+        (form.proton_version_path ?? '') !== (original.proton_version_path ?? '')),
+  );
+
   const dirty = $derived.by(() => {
     if (!form || !original) return false;
     // Cheap shallow compare on the editable fields.
@@ -342,7 +353,7 @@
   }
 
   async function installDeps() {
-    if (!form || depsInstalling) return;
+    if (!form || depsInstalling || launchSettingsDirty) return;
     const verbs = effectiveDeps.trim();
     if (!verbs) return;
     depsInstalling = true;
@@ -380,7 +391,7 @@
   }
 
   async function runInstaller() {
-    if (!form || runningExe) return;
+    if (!form || runningExe || launchSettingsDirty) return;
     const exe = runExePath.trim();
     if (!exe) return;
     runningExe = true;
@@ -812,11 +823,18 @@
                 {:else}
                   <span></span>
                 {/if}
-                <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling || !effectiveDeps}>
+                <Btn
+                  variant="ghost"
+                  onclick={installDeps}
+                  disabled={depsInstalling || !effectiveDeps || launchSettingsDirty}
+                >
                   {#snippet icon()}<Download size={14} />{/snippet}
                   {depsInstalling ? 'Installing…' : 'Install'}
                 </Btn>
               </div>
+              {#if launchSettingsDirty}
+                <span class="text-[10px] text-ink-3">Save your prefix / Proton changes first.</span>
+              {/if}
             </div>
           {/snippet}
           {#snippet runExeRow()}
@@ -833,11 +851,16 @@
                   Browse
                 </Btn>
               </div>
-              <div class="flex justify-end">
+              <div class="flex items-center justify-between">
+                {#if launchSettingsDirty}
+                  <span class="text-[10px] text-ink-3">Save your prefix / Proton changes first.</span>
+                {:else}
+                  <span></span>
+                {/if}
                 <Btn
                   variant="ghost"
                   onclick={runInstaller}
-                  disabled={runningExe || !runExePath.trim()}
+                  disabled={runningExe || !runExePath.trim() || launchSettingsDirty}
                 >
                   {#snippet icon()}<Play size={14} />{/snippet}
                   {runningExe ? 'Running…' : 'Run'}
