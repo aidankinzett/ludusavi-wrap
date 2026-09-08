@@ -123,6 +123,10 @@ export const api = {
   listProtonVersions: (): Promise<ProtonVersion[]> => invoke('list_proton_versions'),
   installProtonDeps: (gameId: string, verbs: string): Promise<string> =>
     invoke('install_proton_deps', { gameId, verbs }),
+  /** Run another Windows `.exe` (e.g. a game patch / update installer) inside a
+   *  game's Proton prefix and wait for it to exit (Linux). */
+  runExeInPrefix: (gameId: string, exePath: string): Promise<string> =>
+    invoke('run_exe_in_prefix', { gameId, exePath }),
 
   /** Run a Windows `setup.exe` through Proton with the install folder mounted as
    *  a Wine drive (Linux). Resolves when the installer process exits. */

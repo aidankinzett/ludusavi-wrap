@@ -619,6 +619,165 @@ pub async fn install_proton_deps_core(
     }
 }
 
+/// Runs an arbitrary Windows `.exe` inside a game's Proton prefix and waits for
+/// it to exit. This exists for patch / update installers a game ships separately
+/// from its own launcher — they have to run in the *same* Wine prefix as the
+/// game so they patch the installed files and see whatever runtime/registry
+/// state the game's first launch set up.
+///
+/// One-shot: nothing is stored on the game entry, no saves are restored or
+/// backed up, and no play session is recorded — it's the winetricks helper's
+/// sibling, not a launch. Linux-only.
+#[tauri::command]
+pub async fn run_exe_in_prefix(
+    app: AppHandle,
+    game_id: String,
+    exe_path: String,
+) -> AppResult<String> {
+    // Snapshot from state, then drop guards before the (blocking) run.
+    let (prefix_override, proton_override) = {
+        let entry = app
+            .state::<SharedLibrary>()
+            .find(&game_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        (
+            entry.wine_prefix_path.clone(),
+            entry.proton_version_path.clone(),
+        )
+    };
+    let (umu_run_path, default_proton_path) = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.launch.umu_run_path.clone(),
+            cfg.data.launch.default_proton_path.clone(),
+        )
+    };
+
+    run_exe_in_prefix_core(
+        &game_id,
+        &exe_path,
+        prefix_override.as_deref(),
+        proton_override.as_deref(),
+        &umu_run_path,
+        &default_proton_path,
+    )
+    .await
+}
+
+/// State-free core of [`run_exe_in_prefix`], mirroring
+/// [`install_proton_deps_core`]: takes the already-resolved per-game and config
+/// values so it can be driven without Tauri `State` injection.
+pub async fn run_exe_in_prefix_core(
+    game_id: &str,
+    exe_path: &str,
+    prefix_override: Option<&str>,
+    proton_override: Option<&str>,
+    umu_run_path: &str,
+    default_proton_path: &str,
+) -> AppResult<String> {
+    if cfg!(windows) {
+        return Err(AppError::Other(
+            "Running an executable through Proton is Linux-only — on Windows, run the installer directly.".into(),
+        ));
+    }
+
+    // Hold the machine-wide per-game run lock for the whole run so a play
+    // session or a disk-wipe can't touch the prefix / install folder underneath
+    // the installer.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy right now (running, or being modified) — close it and try again."
+                .into(),
+        )
+    })?;
+
+    let exe = PathBuf::from(exe_path.trim());
+    if exe.as_os_str().is_empty() {
+        return Err(AppError::Other("No executable given.".into()));
+    }
+    if !exe.is_file() {
+        return Err(AppError::Other(format!(
+            "executable not found: {}",
+            exe.display()
+        )));
+    }
+    if !exe
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
+    {
+        return Err(AppError::Other(
+            "Pick a Windows .exe — other file types can't run through Proton.".into(),
+        ));
+    }
+
+    let umu_run = resolve_umu_run(Some(umu_run_path))?;
+
+    let prefix_root = prefix_override
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| game_prefix_path(game_id));
+    if !prefix_root.is_dir() {
+        return Err(AppError::Other(
+            "This game has no Proton prefix yet — launch the game once so Spool can build its prefix, then run the installer.".into(),
+        ));
+    }
+
+    // Any Proton works here (unlike winetricks). Match the run workflow: an
+    // explicit pin or the config default if either points at a valid dir, else
+    // let umu-run pick — falling back to an installed build only when offline.
+    let mut proton_path = resolve_proton_path(proton_override, Some(default_proton_path));
+    if proton_path.is_none() && crate::config::offline_mode_enabled() {
+        proton_path = resolve_offline_proton_path(&prefix_root);
+    }
+
+    tracing::info!(game_id, exe = %exe.display(), ?proton_path, "run exe in prefix starting");
+
+    // Go through the shared launch primitive: strip-appimage-env, cwd at the
+    // exe's folder, umu env, block until exit. WINE_LARGE_ADDRESS_AWARE mirrors
+    // the guided installer — patch installers decompress large archives in
+    // 32-bit Wine and hit false "not enough memory" errors without it.
+    let result = crate::process::run_game(
+        &exe,
+        crate::process::LaunchSpec::Proton {
+            umu_run: &umu_run,
+            prefix_root: &prefix_root,
+            proton_path: proton_path.as_deref(),
+            game_id,
+            extra_args: &[],
+            extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
+        },
+    )
+    .await?;
+
+    let name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| exe.display().to_string());
+    if result.code == 0 {
+        tracing::info!(game_id, exe = %exe.display(), "run exe in prefix finished");
+        Ok(format!("Finished running {name}."))
+    } else {
+        tracing::warn!(
+            game_id,
+            exe = %exe.display(),
+            code = result.code,
+            "run exe in prefix exited non-zero"
+        );
+        let detail = result
+            .crash_hint
+            .filter(|h| !h.trim().is_empty())
+            .map(|h| format!(":\n{h}"))
+            .unwrap_or_default();
+        Err(AppError::Other(format!(
+            "{name} exited with code {}{detail}",
+            result.code
+        )))
+    }
+}
+
 /// Overall ceiling on the offline-preparation runtime warm-up. First run on a
 /// machine downloads the Steam Linux Runtime container (and UMU-Proton when no
 /// Proton is pinned) — hundreds of MB — so the budget is generous; when
@@ -826,6 +985,38 @@ mod tests {
         // Present but the first line is blank.
         std::fs::write(dir.path().join("config_info"), "\nUMU-Proton-10.0-4\n").unwrap();
         assert_eq!(recorded_proton_name(dir.path()), None);
+    }
+
+    #[tokio::test]
+    async fn run_exe_in_prefix_rejects_non_exe_and_missing() {
+        // Non-.exe file → rejected on file type, before any umu work.
+        let dir = tempfile::tempdir().unwrap();
+        let txt = dir.path().join("patch.txt");
+        std::fs::write(&txt, b"nope").unwrap();
+        let err = run_exe_in_prefix_core(
+            "test-run-exe-in-prefix-nonexe-3a1f",
+            txt.to_str().unwrap(),
+            None,
+            None,
+            "",
+            "",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains(".exe"), "got: {err}");
+
+        // Missing path → rejected as not found.
+        let err = run_exe_in_prefix_core(
+            "test-run-exe-in-prefix-missing-3a1f",
+            &dir.path().join("nope.exe").to_string_lossy(),
+            None,
+            None,
+            "",
+            "",
+        )
+        .await
+        .unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
     }
 
     #[test]

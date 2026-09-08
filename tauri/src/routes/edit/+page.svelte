@@ -19,7 +19,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, FolderInput, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderInput, Play, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { listen } from '@tauri-apps/api/event';
@@ -54,6 +54,10 @@
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let depsInstalling = $state(false);
+
+  // "Run an installer" helper — one-shot, nothing persisted.
+  let runExePath = $state('');
+  let runningExe = $state(false);
 
   // Whether a Proton game's Wine prefix exists yet (false → not launched once,
   // so its save folder doesn't exist). Defaults true so native/Windows games
@@ -363,6 +367,44 @@
     }
   }
 
+  async function browseRunExe() {
+    const picked = await openDialog({
+      title: 'Pick the executable to run in this prefix',
+      multiple: false,
+      filters: [
+        { name: 'Executable', extensions: ['exe'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (typeof picked === 'string') runExePath = picked;
+  }
+
+  async function runInstaller() {
+    if (!form || runningExe) return;
+    const exe = runExePath.trim();
+    if (!exe) return;
+    runningExe = true;
+    try {
+      const msg = await api.runExeInPrefix(form.id, exe);
+      toasts.show({
+        kind: 'ok',
+        label: 'PROTON',
+        title: msg,
+        sub: exe,
+        catalog: fmtCatalog(form.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'PROTON · RUN',
+        title: "Couldn't run the executable",
+        sub: String(e),
+      });
+    } finally {
+      runningExe = false;
+    }
+  }
+
   async function browsePrefix() {
     if (!form) return;
     const picked = await openDialog({
@@ -667,6 +709,11 @@
               'Install Windows runtime packages into this prefix via winetricks. Needs UMU or GE-Proton.',
               depsRow,
             )}
+            {@render field(
+              'Run an installer',
+              "Run another Windows .exe (e.g. a game patch or update installer) inside this game's Proton prefix. Launch the game once first so the prefix exists.",
+              runExeRow,
+            )}
           {/if}
           {@render field(
             'Launch arguments',
@@ -768,6 +815,32 @@
                 <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling || !effectiveDeps}>
                   {#snippet icon()}<Download size={14} />{/snippet}
                   {depsInstalling ? 'Installing…' : 'Install'}
+                </Btn>
+              </div>
+            </div>
+          {/snippet}
+          {#snippet runExeRow()}
+            <div class="flex flex-col gap-1.5">
+              <div class="flex gap-1.5">
+                <TextField
+                  bind:value={runExePath}
+                  mono
+                  full
+                  placeholder="/path/to/update-installer.exe"
+                />
+                <Btn variant="ghost" onclick={browseRunExe} disabled={runningExe}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+              <div class="flex justify-end">
+                <Btn
+                  variant="ghost"
+                  onclick={runInstaller}
+                  disabled={runningExe || !runExePath.trim()}
+                >
+                  {#snippet icon()}<Play size={14} />{/snippet}
+                  {runningExe ? 'Running…' : 'Run'}
                 </Btn>
               </div>
             </div>
