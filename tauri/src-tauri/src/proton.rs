@@ -619,6 +619,183 @@ pub async fn install_proton_deps_core(
     }
 }
 
+/// Runs an arbitrary Windows `.exe` inside a game's Proton prefix and waits for
+/// it to exit. This exists for patch / update installers a game ships separately
+/// from its own launcher — they have to run in the *same* Wine prefix as the
+/// game so they patch the installed files and see whatever runtime/registry
+/// state the game's first launch set up.
+///
+/// One-shot: nothing is stored on the game entry, no saves are restored or
+/// backed up, and no play session is recorded — it's the winetricks helper's
+/// sibling, not a launch. Linux-only.
+#[tauri::command]
+pub async fn run_exe_in_prefix(
+    app: AppHandle,
+    game_id: String,
+    exe_path: String,
+) -> AppResult<String> {
+    // Snapshot from state, then drop guards before the (blocking) run.
+    let (prefix_override, proton_override) = {
+        let entry = app
+            .state::<SharedLibrary>()
+            .find(&game_id)
+            .await?
+            .ok_or_else(|| AppError::Other(format!("game not found: {game_id}")))?;
+        (
+            entry.wine_prefix_path.clone(),
+            entry.proton_version_path.clone(),
+        )
+    };
+    let (umu_run_path, default_proton_path) = {
+        let config = app.state::<SharedConfig>();
+        let cfg = config.lock().map_err(|_| AppError::LockPoisoned)?;
+        (
+            cfg.data.launch.umu_run_path.clone(),
+            cfg.data.launch.default_proton_path.clone(),
+        )
+    };
+
+    run_exe_in_prefix_core(
+        &game_id,
+        &exe_path,
+        prefix_override.as_deref(),
+        proton_override.as_deref(),
+        &umu_run_path,
+        &default_proton_path,
+    )
+    .await
+}
+
+/// Validate a user-picked executable path for [`run_exe_in_prefix_core`]: it must
+/// be a non-empty path to an existing file with an `.exe` extension. Split out
+/// (pure, no side effects) so it's unit-testable without acquiring the run lock.
+fn validate_run_exe(exe_path: &str) -> AppResult<PathBuf> {
+    let exe = PathBuf::from(exe_path.trim());
+    if exe.as_os_str().is_empty() {
+        return Err(AppError::Other("No executable given.".into()));
+    }
+    if !exe.is_file() {
+        return Err(AppError::Other(format!(
+            "executable not found: {}",
+            exe.display()
+        )));
+    }
+    if !exe
+        .extension()
+        .map(|e| e.eq_ignore_ascii_case("exe"))
+        .unwrap_or(false)
+    {
+        return Err(AppError::Other(
+            "Pick a Windows .exe — other file types can't run through Proton.".into(),
+        ));
+    }
+    Ok(exe)
+}
+
+/// State-free core of [`run_exe_in_prefix`], mirroring
+/// [`install_proton_deps_core`]: takes the already-resolved per-game and config
+/// values so it can be driven without Tauri `State` injection.
+pub async fn run_exe_in_prefix_core(
+    game_id: &str,
+    exe_path: &str,
+    prefix_override: Option<&str>,
+    proton_override: Option<&str>,
+    umu_run_path: &str,
+    default_proton_path: &str,
+) -> AppResult<String> {
+    if !cfg!(target_os = "linux") {
+        return Err(AppError::Other(
+            "Running an executable through Proton is Linux-only — on Windows, run the installer directly.".into(),
+        ));
+    }
+
+    let exe = validate_run_exe(exe_path)?;
+
+    // Hold the machine-wide per-game run lock for the whole run so a play
+    // session or a disk-wipe can't touch the prefix / install folder underneath
+    // the installer.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy right now (running, or being modified) — close it and try again."
+                .into(),
+        )
+    })?;
+
+    let umu_run = resolve_umu_run(Some(umu_run_path))?;
+
+    let prefix_root = prefix_override
+        .filter(|p| !p.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| game_prefix_path(game_id));
+    if !prefix_root.is_dir() {
+        return Err(AppError::Other(
+            "This game has no Proton prefix yet — launch the game once so Spool can build its prefix, then run the installer.".into(),
+        ));
+    }
+
+    // Any Proton works here (unlike winetricks). Match the run workflow: an
+    // explicit pin or the config default if either points at a valid dir, else
+    // let umu-run pick — falling back to an installed build only when offline.
+    let mut proton_path = resolve_proton_path(proton_override, Some(default_proton_path));
+    if proton_path.is_none() && crate::config::offline_mode_enabled() {
+        proton_path = resolve_offline_proton_path(&prefix_root);
+    }
+
+    tracing::info!(game_id, exe = %exe.display(), ?proton_path, "run exe in prefix starting");
+
+    let name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| exe.display().to_string());
+
+    // Go through the shared launch primitive: strip-appimage-env, cwd at the
+    // exe's folder, umu env, block until exit. WINE_LARGE_ADDRESS_AWARE mirrors
+    // the guided installer — patch installers decompress large archives in
+    // 32-bit Wine and hit false "not enough memory" errors without it.
+    //
+    // No timeout: an update installer is interactive and can legitimately run
+    // as long as the user takes. The per-game run lock is held for the whole
+    // installer lifetime — same as the guided installer (`guided_install.rs`) —
+    // so a launch or disk-wipe can't race a patch that's still writing. If umu
+    // wedges, quitting Spool releases the lock (the OS frees it on exit).
+    let result = crate::process::run_game(
+        &exe,
+        crate::process::LaunchSpec::Proton {
+            umu_run: &umu_run,
+            prefix_root: &prefix_root,
+            proton_path: proton_path.as_deref(),
+            game_id,
+            extra_args: &[],
+            extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
+        },
+    )
+    .await?;
+
+    // The installer actually ran. Only treat it as a failure when `run_game`
+    // captured a crash hint (a non-zero exit within the first few seconds — a
+    // broken prefix, a missing DLL, umu-run itself falling over). A non-zero
+    // exit *without* a hint is routine for update installers: "already up to
+    // date", the user cancelling the wizard, or a reboot-required code. Report
+    // the code so the user can judge, but don't raise a red error toast.
+    if let Some(hint) = result.crash_hint.filter(|h| !h.trim().is_empty()) {
+        tracing::warn!(game_id, exe = %exe.display(), code = result.code, "run exe in prefix crashed early");
+        return Err(AppError::Other(format!(
+            "{name} failed to start (exit {}):\n{hint}",
+            result.code
+        )));
+    }
+    if result.code == 0 {
+        tracing::info!(game_id, exe = %exe.display(), "run exe in prefix finished");
+        Ok(format!("Finished running {name}."))
+    } else {
+        tracing::info!(game_id, exe = %exe.display(), code = result.code, "run exe in prefix exited non-zero");
+        Ok(format!(
+            "{name} exited with code {} — it may have been cancelled or found nothing to do. Check whether the update applied.",
+            result.code
+        ))
+    }
+}
+
 /// Overall ceiling on the offline-preparation runtime warm-up. First run on a
 /// machine downloads the Steam Linux Runtime container (and UMU-Proton when no
 /// Proton is pinned) — hundreds of MB — so the budget is generous; when
@@ -826,6 +1003,31 @@ mod tests {
         // Present but the first line is blank.
         std::fs::write(dir.path().join("config_info"), "\nUMU-Proton-10.0-4\n").unwrap();
         assert_eq!(recorded_proton_name(dir.path()), None);
+    }
+
+    #[test]
+    fn validate_run_exe_accepts_exe_and_rejects_the_rest() {
+        let dir = tempfile::tempdir().unwrap();
+
+        // Empty path.
+        assert!(validate_run_exe("   ").is_err());
+
+        // Missing path → "not found".
+        let missing = dir.path().join("nope.exe");
+        let err = validate_run_exe(&missing.to_string_lossy()).unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
+
+        // Existing non-.exe file → rejected on file type.
+        let txt = dir.path().join("patch.txt");
+        std::fs::write(&txt, b"nope").unwrap();
+        let err = validate_run_exe(txt.to_str().unwrap()).unwrap_err();
+        assert!(err.to_string().contains(".exe"), "got: {err}");
+
+        // Existing .exe (any case) → ok, trimmed.
+        let exe = dir.path().join("Update.EXE");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let got = validate_run_exe(&format!("  {}  ", exe.display())).unwrap();
+        assert_eq!(got, exe);
     }
 
     #[test]

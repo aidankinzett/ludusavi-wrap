@@ -315,6 +315,7 @@ pub fn run() {
             // proton / linux launch
             proton::list_proton_versions,
             proton::install_proton_deps,
+            proton::run_exe_in_prefix,
             guided_install::run_guided_installer,
             // ludusavi
             ludusavi::search_games,

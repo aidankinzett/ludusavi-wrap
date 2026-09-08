@@ -19,7 +19,7 @@
    */
   import { onMount, onDestroy } from 'svelte';
   import { SvelteSet } from 'svelte/reactivity';
-  import { Download, Folder, FolderInput, RefreshCw, Trash2 } from '@lucide/svelte';
+  import { Download, Folder, FolderInput, Play, RefreshCw, Trash2 } from '@lucide/svelte';
   import { open as openDialog } from '@tauri-apps/plugin-dialog';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { listen } from '@tauri-apps/api/event';
@@ -54,6 +54,10 @@
   let isLinux = $state(false);
   let protonVersions = $state<ProtonVersion[]>([]);
   let depsInstalling = $state(false);
+
+  // "Run an installer" helper — one-shot, nothing persisted.
+  let runExePath = $state('');
+  let runningExe = $state(false);
 
   // Whether a Proton game's Wine prefix exists yet (false → not launched once,
   // so its save folder doesn't exist). Defaults true so native/Windows games
@@ -103,6 +107,17 @@
       p: [...ov.excluded_paths].sort(),
     });
   }
+
+  // The winetricks / "run an installer" helpers act on the *saved* Wine prefix
+  // and Proton version (the backend reloads them from the library by id). If the
+  // user has edited either field without saving, those helpers would target the
+  // wrong prefix — so they're disabled until the launch settings are saved.
+  const launchSettingsDirty = $derived(
+    !!form &&
+      !!original &&
+      ((form.wine_prefix_path ?? '') !== (original.wine_prefix_path ?? '') ||
+        (form.proton_version_path ?? '') !== (original.proton_version_path ?? '')),
+  );
 
   const dirty = $derived.by(() => {
     if (!form || !original) return false;
@@ -338,7 +353,7 @@
   }
 
   async function installDeps() {
-    if (!form || depsInstalling) return;
+    if (!form || depsInstalling || launchSettingsDirty) return;
     const verbs = effectiveDeps.trim();
     if (!verbs) return;
     depsInstalling = true;
@@ -360,6 +375,44 @@
       });
     } finally {
       depsInstalling = false;
+    }
+  }
+
+  async function browseRunExe() {
+    const picked = await openDialog({
+      title: 'Pick the executable to run in this prefix',
+      multiple: false,
+      filters: [
+        { name: 'Executable', extensions: ['exe'] },
+        { name: 'All files', extensions: ['*'] },
+      ],
+    });
+    if (typeof picked === 'string') runExePath = picked;
+  }
+
+  async function runInstaller() {
+    if (!form || runningExe || launchSettingsDirty) return;
+    const exe = runExePath.trim();
+    if (!exe) return;
+    runningExe = true;
+    try {
+      const msg = await api.runExeInPrefix(form.id, exe);
+      toasts.show({
+        kind: 'ok',
+        label: 'PROTON',
+        title: msg,
+        sub: exe,
+        catalog: fmtCatalog(form.catalog_number),
+      });
+    } catch (e) {
+      toasts.show({
+        kind: 'bad',
+        label: 'PROTON · RUN',
+        title: "Couldn't run the executable",
+        sub: String(e),
+      });
+    } finally {
+      runningExe = false;
     }
   }
 
@@ -667,6 +720,11 @@
               'Install Windows runtime packages into this prefix via winetricks. Needs UMU or GE-Proton.',
               depsRow,
             )}
+            {@render field(
+              'Run an installer',
+              "Run another Windows .exe (e.g. a game patch or update installer) inside this game's Proton prefix. Launch the game once first so the prefix exists.",
+              runExeRow,
+            )}
           {/if}
           {@render field(
             'Launch arguments',
@@ -765,9 +823,47 @@
                 {:else}
                   <span></span>
                 {/if}
-                <Btn variant="ghost" onclick={installDeps} disabled={depsInstalling || !effectiveDeps}>
+                <Btn
+                  variant="ghost"
+                  onclick={installDeps}
+                  disabled={depsInstalling || !effectiveDeps || launchSettingsDirty}
+                >
                   {#snippet icon()}<Download size={14} />{/snippet}
                   {depsInstalling ? 'Installing…' : 'Install'}
+                </Btn>
+              </div>
+              {#if launchSettingsDirty}
+                <span class="text-[10px] text-ink-3">Save your prefix / Proton changes first.</span>
+              {/if}
+            </div>
+          {/snippet}
+          {#snippet runExeRow()}
+            <div class="flex flex-col gap-1.5">
+              <div class="flex gap-1.5">
+                <TextField
+                  bind:value={runExePath}
+                  mono
+                  full
+                  placeholder="/path/to/update-installer.exe"
+                />
+                <Btn variant="ghost" onclick={browseRunExe} disabled={runningExe}>
+                  {#snippet icon()}<Folder size={14} />{/snippet}
+                  Browse
+                </Btn>
+              </div>
+              <div class="flex items-center justify-between">
+                {#if launchSettingsDirty}
+                  <span class="text-[10px] text-ink-3">Save your prefix / Proton changes first.</span>
+                {:else}
+                  <span></span>
+                {/if}
+                <Btn
+                  variant="ghost"
+                  onclick={runInstaller}
+                  disabled={runningExe || !runExePath.trim() || launchSettingsDirty}
+                >
+                  {#snippet icon()}<Play size={14} />{/snippet}
+                  {runningExe ? 'Running…' : 'Run'}
                 </Btn>
               </div>
             </div>
