@@ -666,33 +666,17 @@ pub async fn run_exe_in_prefix(
     .await
 }
 
-/// State-free core of [`run_exe_in_prefix`], mirroring
-/// [`install_proton_deps_core`]: takes the already-resolved per-game and config
-/// values so it can be driven without Tauri `State` injection.
-pub async fn run_exe_in_prefix_core(
-    game_id: &str,
-    exe_path: &str,
-    prefix_override: Option<&str>,
-    proton_override: Option<&str>,
-    umu_run_path: &str,
-    default_proton_path: &str,
-) -> AppResult<String> {
-    if cfg!(windows) {
-        return Err(AppError::Other(
-            "Running an executable through Proton is Linux-only — on Windows, run the installer directly.".into(),
-        ));
-    }
+/// Overall ceiling on a [`run_exe_in_prefix_core`] run. An update installer is
+/// interactive and can legitimately take a long time (large downloads, a user
+/// walking away mid-wizard), so the budget is far more generous than the
+/// winetricks one — it's only here so a wedged umu-run / wineserver can't hold
+/// the per-game run lock forever and block every later launch of that game.
+const RUN_EXE_TIMEOUT: Duration = Duration::from_secs(3 * 60 * 60);
 
-    // Hold the machine-wide per-game run lock for the whole run so a play
-    // session or a disk-wipe can't touch the prefix / install folder underneath
-    // the installer.
-    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
-        AppError::Other(
-            "This game is busy right now (running, or being modified) — close it and try again."
-                .into(),
-        )
-    })?;
-
+/// Validate a user-picked executable path for [`run_exe_in_prefix_core`]: it must
+/// be a non-empty path to an existing file with an `.exe` extension. Split out
+/// (pure, no side effects) so it's unit-testable without acquiring the run lock.
+fn validate_run_exe(exe_path: &str) -> AppResult<PathBuf> {
     let exe = PathBuf::from(exe_path.trim());
     if exe.as_os_str().is_empty() {
         return Err(AppError::Other("No executable given.".into()));
@@ -712,6 +696,37 @@ pub async fn run_exe_in_prefix_core(
             "Pick a Windows .exe — other file types can't run through Proton.".into(),
         ));
     }
+    Ok(exe)
+}
+
+/// State-free core of [`run_exe_in_prefix`], mirroring
+/// [`install_proton_deps_core`]: takes the already-resolved per-game and config
+/// values so it can be driven without Tauri `State` injection.
+pub async fn run_exe_in_prefix_core(
+    game_id: &str,
+    exe_path: &str,
+    prefix_override: Option<&str>,
+    proton_override: Option<&str>,
+    umu_run_path: &str,
+    default_proton_path: &str,
+) -> AppResult<String> {
+    if cfg!(windows) {
+        return Err(AppError::Other(
+            "Running an executable through Proton is Linux-only — on Windows, run the installer directly.".into(),
+        ));
+    }
+
+    let exe = validate_run_exe(exe_path)?;
+
+    // Hold the machine-wide per-game run lock for the whole run so a play
+    // session or a disk-wipe can't touch the prefix / install folder underneath
+    // the installer.
+    let _run_lock = crate::proc_lock::try_acquire_run(game_id)?.ok_or_else(|| {
+        AppError::Other(
+            "This game is busy right now (running, or being modified) — close it and try again."
+                .into(),
+        )
+    })?;
 
     let umu_run = resolve_umu_run(Some(umu_run_path))?;
 
@@ -735,11 +750,19 @@ pub async fn run_exe_in_prefix_core(
 
     tracing::info!(game_id, exe = %exe.display(), ?proton_path, "run exe in prefix starting");
 
+    let name = exe
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .unwrap_or_else(|| exe.display().to_string());
+
     // Go through the shared launch primitive: strip-appimage-env, cwd at the
     // exe's folder, umu env, block until exit. WINE_LARGE_ADDRESS_AWARE mirrors
     // the guided installer — patch installers decompress large archives in
-    // 32-bit Wine and hit false "not enough memory" errors without it.
-    let result = crate::process::run_game(
+    // 32-bit Wine and hit false "not enough memory" errors without it. Bounded
+    // by RUN_EXE_TIMEOUT so a wedged umu-run can't pin the run lock forever;
+    // on timeout we return and drop `_run_lock`, freeing later launches (the
+    // lingering child, if any, is reaped by the OS when Spool exits).
+    let run = crate::process::run_game(
         &exe,
         crate::process::LaunchSpec::Proton {
             umu_run: &umu_run,
@@ -749,32 +772,40 @@ pub async fn run_exe_in_prefix_core(
             extra_args: &[],
             extra_env: &[("WINE_LARGE_ADDRESS_AWARE", "1")],
         },
-    )
-    .await?;
+    );
+    let result = match tokio::time::timeout(RUN_EXE_TIMEOUT, run).await {
+        Ok(res) => res?,
+        Err(_) => {
+            tracing::warn!(game_id, exe = %exe.display(), "run exe in prefix timed out");
+            return Err(AppError::Other(format!(
+                "{name} is still running after {} hours — giving up so it doesn't block launching this game. If it's genuinely still working, let it finish and don't launch the game yet.",
+                RUN_EXE_TIMEOUT.as_secs() / 3600
+            )));
+        }
+    };
 
-    let name = exe
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .unwrap_or_else(|| exe.display().to_string());
+    // The installer actually ran. Only treat it as a failure when `run_game`
+    // captured a crash hint (a non-zero exit within the first few seconds — a
+    // broken prefix, a missing DLL, umu-run itself falling over). A non-zero
+    // exit *without* a hint is routine for update installers: "already up to
+    // date", the user cancelling the wizard, or a reboot-required code. Report
+    // the code so the user can judge, but don't raise a red error toast.
+    if let Some(hint) = result.crash_hint.filter(|h| !h.trim().is_empty()) {
+        tracing::warn!(game_id, exe = %exe.display(), code = result.code, "run exe in prefix crashed early");
+        return Err(AppError::Other(format!(
+            "{name} failed to start (exit {}):\n{hint}",
+            result.code
+        )));
+    }
     if result.code == 0 {
         tracing::info!(game_id, exe = %exe.display(), "run exe in prefix finished");
         Ok(format!("Finished running {name}."))
     } else {
-        tracing::warn!(
-            game_id,
-            exe = %exe.display(),
-            code = result.code,
-            "run exe in prefix exited non-zero"
-        );
-        let detail = result
-            .crash_hint
-            .filter(|h| !h.trim().is_empty())
-            .map(|h| format!(":\n{h}"))
-            .unwrap_or_default();
-        Err(AppError::Other(format!(
-            "{name} exited with code {}{detail}",
+        tracing::info!(game_id, exe = %exe.display(), code = result.code, "run exe in prefix exited non-zero");
+        Ok(format!(
+            "{name} exited with code {} — it may have been cancelled or found nothing to do. Check whether the update applied.",
             result.code
-        )))
+        ))
     }
 }
 
@@ -987,36 +1018,29 @@ mod tests {
         assert_eq!(recorded_proton_name(dir.path()), None);
     }
 
-    #[tokio::test]
-    async fn run_exe_in_prefix_rejects_non_exe_and_missing() {
-        // Non-.exe file → rejected on file type, before any umu work.
+    #[test]
+    fn validate_run_exe_accepts_exe_and_rejects_the_rest() {
         let dir = tempfile::tempdir().unwrap();
+
+        // Empty path.
+        assert!(validate_run_exe("   ").is_err());
+
+        // Missing path → "not found".
+        let missing = dir.path().join("nope.exe");
+        let err = validate_run_exe(&missing.to_string_lossy()).unwrap_err();
+        assert!(err.to_string().contains("not found"), "got: {err}");
+
+        // Existing non-.exe file → rejected on file type.
         let txt = dir.path().join("patch.txt");
         std::fs::write(&txt, b"nope").unwrap();
-        let err = run_exe_in_prefix_core(
-            "test-run-exe-in-prefix-nonexe-3a1f",
-            txt.to_str().unwrap(),
-            None,
-            None,
-            "",
-            "",
-        )
-        .await
-        .unwrap_err();
+        let err = validate_run_exe(txt.to_str().unwrap()).unwrap_err();
         assert!(err.to_string().contains(".exe"), "got: {err}");
 
-        // Missing path → rejected as not found.
-        let err = run_exe_in_prefix_core(
-            "test-run-exe-in-prefix-missing-3a1f",
-            &dir.path().join("nope.exe").to_string_lossy(),
-            None,
-            None,
-            "",
-            "",
-        )
-        .await
-        .unwrap_err();
-        assert!(err.to_string().contains("not found"), "got: {err}");
+        // Existing .exe (any case) → ok, trimmed.
+        let exe = dir.path().join("Update.EXE");
+        std::fs::write(&exe, b"MZ").unwrap();
+        let got = validate_run_exe(&format!("  {}  ", exe.display())).unwrap();
+        assert_eq!(got, exe);
     }
 
     #[test]
