@@ -12,9 +12,28 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
 REPO_ROOT="$(dirname "$TAURI_DIR")"
 APPIMAGE_DIR="$TAURI_DIR/src-tauri/target/release/bundle/appimage"
-APPIMAGETOOL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/spool/appimagetool"
-APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage"
 TAURI_CONF="$TAURI_DIR/src-tauri/tauri.conf.json"
+
+# Build for whichever architecture this machine is. tauri-bundler suffixes the
+# AppImage with its own arch name (`amd64` / `aarch64`), while appimagetool
+# wants the uname-style name — hence the two variables.
+case "$(uname -m)" in
+  x86_64 | amd64)
+    APPIMAGE_ARCH="x86_64"
+    BUNDLER_ARCH="amd64"
+    ;;
+  aarch64 | arm64)
+    APPIMAGE_ARCH="aarch64"
+    BUNDLER_ARCH="aarch64"
+    ;;
+  *)
+    echo "Unsupported architecture: $(uname -m)" >&2
+    exit 1
+    ;;
+esac
+ASSET="Spool_${BUNDLER_ARCH}.AppImage"
+APPIMAGETOOL_CACHE="${XDG_CACHE_HOME:-$HOME/.cache}/spool/appimagetool-$APPIMAGE_ARCH"
+APPIMAGETOOL_URL="https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-$APPIMAGE_ARCH.AppImage"
 
 # ── Decky plugin ─────────────────────────────────────────────────────────────
 echo "==> Building Decky plugin..."
@@ -29,6 +48,13 @@ bun install
 
 echo "==> Downloading sidecars (if needed)..."
 bun run download-sidecars
+
+# ludusavi publishes no aarch64 Linux binary, so the download above only
+# fetches rclone there. Compile ludusavi at the same pinned version.
+if [ "$APPIMAGE_ARCH" = "aarch64" ] && [ ! -s "$TAURI_DIR/src-tauri/binaries/ludusavi-aarch64-unknown-linux-gnu" ]; then
+  echo "==> Building the ludusavi sidecar from source (no aarch64 release)..."
+  "$SCRIPT_DIR/build-ludusavi.sh"
+fi
 
 # ── Patch tauri.conf.json if no signing key ───────────────────────────────────
 # When TAURI_SIGNING_PRIVATE_KEY is absent the build fails after producing the
@@ -63,7 +89,7 @@ trap - EXIT
 # falls back to the host's libs which match the host compositor's protocol.
 echo "==> Extracting AppImage..."
 cd "$APPIMAGE_DIR"
-APPIMAGE=$(ls Spool_*_amd64.AppImage 2>/dev/null | grep -v '^Spool_amd64' | head -1)
+APPIMAGE=$(ls "Spool_"*"_${BUNDLER_ARCH}.AppImage" 2>/dev/null | grep -v "^$ASSET\$" | head -1)
 if [ -z "$APPIMAGE" ]; then
   echo "Error: no AppImage found in $APPIMAGE_DIR" >&2
   exit 1
@@ -87,17 +113,17 @@ fi
 
 echo "==> Repacking AppImage..."
 rm -f "$APPIMAGE" "${APPIMAGE}.sig" 2>/dev/null || true
-ARCH=x86_64 "$APPIMAGETOOL_CACHE" --appimage-extract-and-run squashfs-root Spool_amd64.AppImage
+ARCH="$APPIMAGE_ARCH" "$APPIMAGETOOL_CACHE" --appimage-extract-and-run squashfs-root "$ASSET"
 rm -rf squashfs-root
 
 # ── Optional re-sign ──────────────────────────────────────────────────────────
 if [ -n "${TAURI_SIGNING_PRIVATE_KEY:-}" ]; then
   echo "==> Re-signing AppImage..."
   cd "$TAURI_DIR"
-  bunx @tauri-apps/cli signer sign "$APPIMAGE_DIR/Spool_amd64.AppImage"
+  bunx @tauri-apps/cli signer sign "$APPIMAGE_DIR/$ASSET"
 else
   echo "==> Skipping signing (set TAURI_SIGNING_PRIVATE_KEY to sign)"
 fi
 
 echo ""
-echo "Done: $APPIMAGE_DIR/Spool_amd64.AppImage"
+echo "Done: $APPIMAGE_DIR/$ASSET"

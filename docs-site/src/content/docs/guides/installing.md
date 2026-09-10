@@ -4,8 +4,9 @@ description: Download and install Spool on Windows or a Linux handheld, and add 
 ---
 
 Spool runs on **Windows** and **Linux**, including the gaming-handheld distros
-(Bazzite, CachyOS, SteamOS / Steam Deck). The library, save sync, LAN sharing,
-and cloud sync work the same on both.
+(Bazzite, CachyOS, SteamOS / Steam Deck) and ARM64 handhelds running
+[Armada](https://armadaos.dev/). The library, save sync, LAN sharing, and cloud
+sync work the same on all of them.
 
 ## Download
 
@@ -13,7 +14,8 @@ Grab the latest build from the
 [Releases page](https://github.com/aidankinzett/Spool/releases):
 
 - **Windows** — the `Spool_<version>_x64-setup.exe` installer.
-- **Linux** — the `Spool_<version>_amd64.AppImage`.
+- **Linux (x86_64)** — the `Spool_amd64.AppImage`.
+- **Linux (ARM64)** — the `Spool_aarch64.AppImage`.
 
 Both platforms update themselves in place — when a new version is released,
 Spool prompts to download and apply it on the next launch.
@@ -30,11 +32,12 @@ and adds a Start Menu entry.
 Run the AppImage:
 
 ```bash
-./Spool_*_amd64.AppImage
+./Spool_amd64.AppImage      # x86_64
+./Spool_aarch64.AppImage    # ARM64
 ```
 
 If your browser cleared the executable bit on download, mark it runnable first
-with `chmod +x Spool_*_amd64.AppImage`.
+with `chmod +x Spool_*.AppImage`.
 
 To install it properly — drop the AppImage into `~/Applications` and add a
 launcher entry (with icon) so Spool shows up in your desktop's application menu
@@ -44,9 +47,10 @@ launcher entry (with icon) so Spool shows up in your desktop's application menu
 curl -fsSL https://raw.githubusercontent.com/aidankinzett/Spool/master/scripts/install-appimage.sh | bash
 ```
 
-It downloads the latest release, registers the launcher entry, and installs the
-icons. Re-run it anytime to reinstall (the AppImage also self-updates in place),
-or pass `--uninstall` to remove the AppImage and launcher entry.
+It picks the AppImage matching your machine's architecture, downloads the latest
+release, registers the launcher entry, and installs the icons. Re-run it anytime
+to reinstall (the AppImage also self-updates in place), or pass `--uninstall` to
+remove the AppImage and launcher entry.
 
 On a Steam Deck or other handheld, do this from Desktop Mode the first time. To
 launch your library from Game Mode without dropping to the desktop, install the
@@ -60,6 +64,13 @@ installed; on most other distros it's a one-line package install; on **SteamOS /
 Steam Deck** it needs a home-directory build because the root is read-only. See
 [Installing umu-launcher](/guides/installing-umu/) for per-distro steps.
 Settings → Compatibility also checks whether it's present and links the guide.
+
+On **ARM64** this doesn't work yet: umu-launcher has no usable aarch64 build,
+so Windows `.exe` games can't be launched there. Native Linux games work, and
+so do x86_64 Linux games on distros that run them through FEX — Armada
+registers FEX system-wide, so Spool launches them like any other native game.
+Everything else — the library, save backup and restore, cloud sync, and LAN
+sharing — works the same on ARM as anywhere else.
 :::
 
 ## How Spool runs

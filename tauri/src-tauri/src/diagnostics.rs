@@ -176,6 +176,14 @@ fn extract_field<'a>(content: &'a str, key: &str) -> &'a str {
 // ── Per-distro install hints ──────────────────────────────────────────────────
 
 fn install_hint_umu(distro: &Distro) -> String {
+    // umu-launcher's aarch64 support isn't usable yet: most distros package it
+    // for x86_64 only, and the ARM handheld images that do ship a Proton build
+    // (Armada and friends) have a read-only root anyway. Handing out a package
+    // command that cannot work is worse than saying so, so short-circuit the
+    // per-distro hints and let the docs link explain the state of play.
+    if cfg!(target_arch = "aarch64") {
+        return "# Windows games aren't supported on ARM yet — see the guide below".to_string();
+    }
     match distro {
         // SteamOS root is read-only and AUR isn't available, so there's no
         // one-line package install — the docs link covers the home-dir build.

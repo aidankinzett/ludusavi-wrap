@@ -25,6 +25,18 @@ const targets = {
       extractFile: `rclone-v${RCLONE_VER}-linux-amd64/rclone`
     }
   ],
+  // ludusavi publishes no aarch64 Linux binary, so only rclone is downloaded
+  // here; `scripts/build-ludusavi.sh` compiles the matching ludusavi from
+  // source. Note the naming asymmetry: rclone calls this `arm64`, the Rust
+  // target triple calls it `aarch64`.
+  'linux-arm64': [
+    {
+      name: 'rclone-aarch64-unknown-linux-gnu',
+      url: `https://github.com/rclone/rclone/releases/download/v${RCLONE_VER}/rclone-v${RCLONE_VER}-linux-arm64.zip`,
+      archiveType: 'zip',
+      extractFile: `rclone-v${RCLONE_VER}-linux-arm64/rclone`
+    }
+  ],
   win32: [
     {
       name: 'ludusavi-x86_64-pc-windows-msvc.exe',
@@ -91,7 +103,12 @@ const extractArchive = (archivePath, tempExtractDir, archiveType) => {
 async function main() {
   const args = process.argv.slice(2);
 
-  const hostPlatformKey = process.platform === 'linux' ? 'linux-x64' : process.platform;
+  const hostPlatformKey =
+    process.platform === 'linux'
+      ? process.arch === 'arm64'
+        ? 'linux-arm64'
+        : 'linux-x64'
+      : process.platform;
 
   let platformKey = hostPlatformKey;
 
