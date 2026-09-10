@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  # Manual test builds. Produces the same bundles as a real release and
+  # uploads them as workflow artifacts, but publishes nothing — the `release`
+  # job is gated on the tag trigger. Use it to get an installable build (an
+  # aarch64 AppImage in particular, which no other workflow produces) onto a
+  # device before committing to a version tag.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp into the build (no leading v). Test builds only — nothing is published."
+        required: false
+        default: "0.0.0"
 
 jobs:
   build-windows:
@@ -82,8 +93,18 @@ jobs:
         id: ver
         env:
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          $version = "$env:REF_NAME".TrimStart('v')
+          # On a manual run the ref is a branch, so there's no version to
+          # strip — fall back to the dispatch input.
+          if ("$env:REF_TYPE" -eq "tag") {
+            $version = "$env:REF_NAME".TrimStart('v')
+          } elseif ("$env:INPUT_VERSION") {
+            $version = "$env:INPUT_VERSION"
+          } else {
+            $version = "0.0.0"
+          }
           "value=$version" >> $env:GITHUB_OUTPUT
 
       - name: Stamp version into Tauri config + Cargo.toml
@@ -210,11 +231,26 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
 
-      - name: Stamp version into Tauri config + Cargo.toml
+      - name: Resolve version
+        id: ver
         env:
           REF_NAME: ${{ github.ref_name }}
+          REF_TYPE: ${{ github.ref_type }}
+          INPUT_VERSION: ${{ inputs.version }}
         run: |
-          VERSION="${REF_NAME#v}"
+          set -euo pipefail
+          # On a manual run the ref is a branch, so there's no version to
+          # strip — fall back to the dispatch input.
+          if [ "$REF_TYPE" = "tag" ]; then
+            echo "value=${REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=${INPUT_VERSION:-0.0.0}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Stamp version into Tauri config + Cargo.toml
+        env:
+          VERSION: ${{ steps.ver.outputs.value }}
+        run: |
           jq --arg v "$VERSION" '.version = $v' tauri/src-tauri/tauri.conf.json > /tmp/tauri.conf.json && mv /tmp/tauri.conf.json tauri/src-tauri/tauri.conf.json
           sed -i "s/^version = \".*\"/version = \"$VERSION\"/" tauri/src-tauri/Cargo.toml
 
@@ -323,10 +359,9 @@ jobs:
         # libs. Ship binary + icon; the PKGBUILD generates the .desktop.
         working-directory: tauri/src-tauri
         env:
-          REF_NAME: ${{ github.ref_name }}
+          VERSION: ${{ steps.ver.outputs.value }}
         run: |
           set -euo pipefail
-          VERSION="${REF_NAME#v}"
           STAGE="$(mktemp -d)"
           install -Dm755 target/release/spool "$STAGE/spool"
           install -Dm644 icons/128x128.png "$STAGE/spool.png"
@@ -359,6 +394,9 @@ jobs:
     # this from the build jobs lets Windows and Linux compile in
     # parallel and removes the old cross-job .sig pull-back hack.
     needs: [build-windows, build-linux]
+    # Never publish from a manual run — those exist to produce artifacts for
+    # testing, not to create a GitHub Release.
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-latest
     permissions:
       contents: write

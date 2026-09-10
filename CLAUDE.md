@@ -169,7 +169,7 @@ Reads use `rclone cat` (read-after-write consistent on more backends than a list
 
 GitHub Actions in `.github/workflows/`:
 * **`ci.yml`** — push to `master` + PRs. `build-windows` (Windows) builds the backend and runs clippy/check/test + frontend checks; `build-linux` (Ubuntu, push-only) does a release-profile compile to smoke-test the Linux build and warm its cache — an arch matrix, x86_64 on `ubuntu-22.04` and aarch64 on `ubuntu-22.04-arm`; `e2e-linux` runs the WebDriver suite under Xvfb. `sccache` + `Swatinem/rust-cache`. The push/PR split is deliberate so the cache saves to the default-branch scope the tag-triggered release build later restores.
-* **`release.yml`** — tag-triggered; builds the Windows NSIS installer and the x86_64 + aarch64 Linux AppImages, then publishes all three plus a combined `latest.json` (see Releasing).
+* **`release.yml`** — tag-triggered; builds the Windows NSIS installer and the x86_64 + aarch64 Linux AppImages, then publishes all three plus a combined `latest.json` (see Releasing). Also has a `workflow_dispatch` **test-build** path: same bundles, uploaded as workflow artifacts, publishing skipped (`release` is gated on `github.ref_type == 'tag'`). Version comes from the tag on a real release and from the dispatch `version` input otherwise, since a branch ref has no version to strip. This is the only way to get an installable aarch64 AppImage without cutting a release — `ci.yml`'s Linux build is `--no-bundle`.
 * **`debug-token.yml`** — manual token/permissions diagnostics.
 
 ## Releasing
