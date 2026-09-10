@@ -313,7 +313,25 @@ fn resolve_winetricks_proton(
     ))
 }
 
-/// Locate the `umu-run` launcher: config override → `/usr/bin/umu-run` → PATH.
+/// Heroic Games Launcher downloads its own `umu-run` into its tools dir rather
+/// than using a system package. On distros that ship no `umu-launcher` package
+/// at all — every aarch64 image so far, and immutable roots like Armada — that
+/// copy is often the only `umu-run` on the machine, so it's worth finding.
+///
+/// Returns both layouts: the native install and the Flatpak one. Pure so the
+/// path shapes can be unit-tested without touching `$HOME`.
+fn heroic_umu_candidates(home: &Path) -> Vec<PathBuf> {
+    const TOOLS_SUBPATH: &str = "tools/runtimes/umu/umu-run";
+    vec![
+        home.join(".config/heroic").join(TOOLS_SUBPATH),
+        home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic")
+            .join(TOOLS_SUBPATH),
+    ]
+}
+
+/// Locate the `umu-run` launcher: config override → `/usr/bin/umu-run` → PATH
+/// → Heroic's bundled copy. The system paths come first so an explicitly
+/// installed umu always wins over another launcher's private copy.
 pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
     if let Some(o) = override_path {
         let trimmed = o.trim();
@@ -331,6 +349,13 @@ pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
     if let Some(path_env) = env::var_os("PATH") {
         for dir in env::split_paths(&path_env) {
             let candidate = dir.join("umu-run");
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    if let Some(home) = dirs::home_dir() {
+        for candidate in heroic_umu_candidates(&home) {
             if candidate.is_file() {
                 return Ok(candidate);
             }
@@ -888,6 +913,43 @@ pub async fn warm_offline_runtime(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn heroic_umu_candidates_cover_native_and_flatpak_layouts() {
+        let c = heroic_umu_candidates(Path::new("/home/tester"));
+        assert_eq!(
+            c,
+            vec![
+                PathBuf::from("/home/tester/.config/heroic/tools/runtimes/umu/umu-run"),
+                PathBuf::from(
+                    "/home/tester/.var/app/com.heroicgameslauncher.hgl/config/heroic/tools/runtimes/umu/umu-run"
+                ),
+            ]
+        );
+    }
+
+    /// An explicit override always wins, even when it names a file that a
+    /// later fallback would also have found — the user's choice is final.
+    #[test]
+    fn resolve_umu_run_prefers_the_override() {
+        let dir = tempfile::tempdir().unwrap();
+        let umu = dir.path().join("umu-run");
+        std::fs::write(&umu, b"").unwrap();
+        let resolved = resolve_umu_run(Some(umu.to_str().unwrap())).unwrap();
+        assert_eq!(resolved, umu);
+    }
+
+    /// A blank or whitespace-only override falls through to discovery rather
+    /// than being treated as a path — that's what an unset config field looks
+    /// like once it round-trips through serde.
+    #[test]
+    fn resolve_umu_run_ignores_a_blank_override() {
+        // Discovery may or may not find a real umu-run on the test machine;
+        // either way the blank override must not be what resolves.
+        if let Ok(p) = resolve_umu_run(Some("   ")) {
+            assert_ne!(p.as_os_str(), "   ");
+        }
+    }
 
     #[test]
     fn umu_launch_sets_env_and_args() {

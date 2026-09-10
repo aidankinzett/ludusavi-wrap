@@ -363,6 +363,34 @@
     try { deps = await api.checkDependencies(); } finally { depsLoading = false; }
   }
 
+  let detectingUmu = $state(false);
+  // `detect_umu_run` persists the path it finds on the backend, so mirror the
+  // result into the live config rather than calling persist() and writing the
+  // stale local value back over it.
+  async function detectUmuRun() {
+    if (!config) return;
+    detectingUmu = true;
+    try {
+      const found = await api.detectUmuRun();
+      if (found) {
+        config.umu_run_path = found;
+        toasts.show({ kind: 'ok', label: 'COMPATIBILITY', title: 'Found umu-run', sub: found });
+      } else {
+        toasts.show({
+          kind: 'warn',
+          label: 'COMPATIBILITY',
+          title: 'No umu-run found',
+          sub: "Install umu-launcher or Heroic, or enter the path manually.",
+        });
+      }
+      await refreshDeps();
+    } catch (e) {
+      toasts.show({ kind: 'bad', label: 'COMPATIBILITY', title: 'Detection failed', sub: String(e) });
+    } finally {
+      detectingUmu = false;
+    }
+  }
+
   let addingToSteam = $state(false);
   async function addSpoolToSteam() {
     if (!(await confirmSteamRestart())) return;
@@ -1246,6 +1274,27 @@
                         options={protonOptions}
                         onchange={persist}
                       />
+                    {/snippet}
+                  </SettingsRow>
+
+                  <SettingsRow
+                    label="umu-run path"
+                    helper="Leave blank to search /usr/bin, PATH, then Heroic's bundled copy. Set it to use a specific umu-run."
+                  >
+                    {#snippet control()}
+                      <TextField
+                        bind:value={config!.umu_run_path}
+                        placeholder="/usr/bin/umu-run"
+                        mono
+                        full
+                        oncommit={persist}
+                      />
+                    {/snippet}
+                    {#snippet extras()}
+                      <Btn variant="ghost" onclick={detectUmuRun} disabled={detectingUmu}>
+                        {#snippet icon()}<RefreshCcw size={14} />{/snippet}
+                        {detectingUmu ? 'Detecting…' : 'Detect'}
+                      </Btn>
                     {/snippet}
                   </SettingsRow>
 
