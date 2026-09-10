@@ -318,12 +318,15 @@ fn resolve_winetricks_proton(
 /// at all — every aarch64 image so far, and immutable roots like Armada — that
 /// copy is often the only `umu-run` on the machine, so it's worth finding.
 ///
-/// Returns both layouts: the native install and the Flatpak one. Pure so the
-/// path shapes can be unit-tested without touching `$HOME`.
-fn heroic_umu_candidates(home: &Path) -> Vec<PathBuf> {
+/// Returns both layouts: the native install and the Flatpak one. Heroic is an
+/// Electron app, so its native config dir follows `$XDG_CONFIG_HOME` — hence
+/// `config_dir` rather than assuming `~/.config`, which images that relocate
+/// config would otherwise miss. The Flatpak path is fixed by the sandbox and
+/// stays home-relative. Pure so the shapes can be unit-tested without env.
+fn heroic_umu_candidates(config_dir: &Path, home: &Path) -> Vec<PathBuf> {
     const TOOLS_SUBPATH: &str = "tools/runtimes/umu/umu-run";
     vec![
-        home.join(".config/heroic").join(TOOLS_SUBPATH),
+        config_dir.join("heroic").join(TOOLS_SUBPATH),
         home.join(".var/app/com.heroicgameslauncher.hgl/config/heroic")
             .join(TOOLS_SUBPATH),
     ]
@@ -354,8 +357,8 @@ pub fn resolve_umu_run(override_path: Option<&str>) -> AppResult<PathBuf> {
             }
         }
     }
-    if let Some(home) = dirs::home_dir() {
-        for candidate in heroic_umu_candidates(&home) {
+    if let (Some(config_dir), Some(home)) = (dirs::config_dir(), dirs::home_dir()) {
+        for candidate in heroic_umu_candidates(&config_dir, &home) {
             if candidate.is_file() {
                 return Ok(candidate);
             }
@@ -916,7 +919,10 @@ mod tests {
 
     #[test]
     fn heroic_umu_candidates_cover_native_and_flatpak_layouts() {
-        let c = heroic_umu_candidates(Path::new("/home/tester"));
+        let c = heroic_umu_candidates(
+            Path::new("/home/tester/.config"),
+            Path::new("/home/tester"),
+        );
         assert_eq!(
             c,
             vec![
@@ -925,6 +931,18 @@ mod tests {
                     "/home/tester/.var/app/com.heroicgameslauncher.hgl/config/heroic/tools/runtimes/umu/umu-run"
                 ),
             ]
+        );
+    }
+
+    /// A relocated `$XDG_CONFIG_HOME` must be honoured for the native install —
+    /// on aarch64, where no distro packages umu, missing Heroic's copy means
+    /// Proton launches fail outright.
+    #[test]
+    fn heroic_umu_candidates_follow_a_relocated_config_dir() {
+        let c = heroic_umu_candidates(Path::new("/cfg"), Path::new("/home/tester"));
+        assert_eq!(
+            c[0],
+            PathBuf::from("/cfg/heroic/tools/runtimes/umu/umu-run")
         );
     }
 

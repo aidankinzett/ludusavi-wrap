@@ -121,7 +121,8 @@ async function main() {
     }
   }
 
-  const platformsToDownload = platformKey === 'all' ? ['linux-x64', 'win32'] : [platformKey];
+  const platformsToDownload =
+    platformKey === 'all' ? ['linux-x64', 'linux-arm64', 'win32'] : [platformKey];
   const binariesDir = path.join(__dirname, '../src-tauri/binaries');
   
   if (!fs.existsSync(binariesDir)) {

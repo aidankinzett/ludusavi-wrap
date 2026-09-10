@@ -742,14 +742,25 @@ pub fn app_platform() -> String {
 }
 
 /// Runs umu-run auto-detection on demand (Settings → Compatibility). Returns
-/// the resulting path (empty string if nothing was found). Persists if found.
+/// the resulting path, or an empty string when there's nothing usable.
+/// Persists if a new path was found.
+///
+/// `auto_detect_umu_run` leaves a stale `umu_run_path` in place when it can't
+/// find anything, so returning the field unconditionally would report a path
+/// that no longer exists as a successful detection. Only a path that is
+/// actually a file is reported back.
 #[tauri::command]
 pub fn detect_umu_run(state: State<'_, SharedConfig>) -> AppResult<String> {
     let mut cfg = state.lock().map_err(|_| AppError::LockPoisoned)?;
     if auto_detect_umu_run(&mut cfg.data) {
         cfg.save()?;
     }
-    Ok(cfg.data.launch.umu_run_path.clone())
+    let path = cfg.data.launch.umu_run_path.clone();
+    if !path.is_empty() && PathBuf::from(&path).is_file() {
+        Ok(path)
+    } else {
+        Ok(String::new())
+    }
 }
 
 #[cfg(test)]
