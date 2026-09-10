@@ -98,10 +98,20 @@ chmod +x "$APPIMAGE"
 ./"$APPIMAGE" --appimage-extract >/dev/null
 
 echo "==> Stripping libwayland-* from squashfs-root..."
-rm -f squashfs-root/usr/lib/libwayland-client.so.* \
-      squashfs-root/usr/lib/libwayland-cursor.so.* \
-      squashfs-root/usr/lib/libwayland-egl.so.* \
-      squashfs-root/usr/lib/libwayland-server.so.*
+# Search the whole AppDir rather than assuming usr/lib — linuxdeploy can use an
+# arch-qualified libdir, and a fixed glob matching nothing would `rm -f`
+# silently and leave the unstripped bundle in place.
+mapfile -t WAYLAND_LIBS < <(find squashfs-root \
+  \( -name 'libwayland-client.so.*' \
+  -o -name 'libwayland-cursor.so.*' \
+  -o -name 'libwayland-egl.so.*' \
+  -o -name 'libwayland-server.so.*' \) -type f)
+if [ "${#WAYLAND_LIBS[@]}" -eq 0 ]; then
+  echo "    warning: no bundled libwayland-* found; this AppImage may white-screen on newer Mesa"
+else
+  printf '    stripping %s\n' "${WAYLAND_LIBS[@]}"
+  rm -f "${WAYLAND_LIBS[@]}"
+fi
 
 # ── appimagetool ─────────────────────────────────────────────────────────────
 if [ ! -x "$APPIMAGETOOL_CACHE" ]; then

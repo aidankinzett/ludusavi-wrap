@@ -333,10 +333,20 @@ jobs:
           APPIMAGE=$(ls Spool_*_${{ matrix.bundler_arch }}.AppImage)
           chmod +x "$APPIMAGE"
           ./"$APPIMAGE" --appimage-extract >/dev/null
-          rm -f squashfs-root/usr/lib/libwayland-client.so.* \
-                squashfs-root/usr/lib/libwayland-cursor.so.* \
-                squashfs-root/usr/lib/libwayland-egl.so.* \
-                squashfs-root/usr/lib/libwayland-server.so.*
+          # Search the whole AppDir rather than assuming usr/lib: linuxdeploy
+          # can use an arch-qualified libdir, and a fixed glob that matches
+          # nothing would `rm -f` silently and ship the unstripped bundle.
+          mapfile -t WAYLAND_LIBS < <(find squashfs-root \
+            \( -name 'libwayland-client.so.*' \
+            -o -name 'libwayland-cursor.so.*' \
+            -o -name 'libwayland-egl.so.*' \
+            -o -name 'libwayland-server.so.*' \) -type f)
+          if [ "${#WAYLAND_LIBS[@]}" -eq 0 ]; then
+            echo "::warning::No bundled libwayland-* found to strip. If linuxdeploy changed its layout this AppImage may white-screen on newer Mesa."
+          else
+            printf 'stripping %s\n' "${WAYLAND_LIBS[@]}"
+            rm -f "${WAYLAND_LIBS[@]}"
+          fi
           wget -q -O appimagetool \
             https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage
           chmod +x appimagetool
@@ -399,8 +409,10 @@ jobs:
     # parallel and removes the old cross-job .sig pull-back hack.
     needs: [build-windows, build-linux]
     # Never publish from a manual run — those exist to produce artifacts for
-    # testing, not to create a GitHub Release.
-    if: github.ref_type == 'tag'
+    # testing, not to create a GitHub Release. Gate on the trigger, not the ref
+    # type: workflow_dispatch's ref picker lists tags as well as branches, so
+    # a test build dispatched against a tag would otherwise publish it.
+    if: github.event_name == 'push'
     runs-on: ubuntu-latest
     permissions:
       contents: write
