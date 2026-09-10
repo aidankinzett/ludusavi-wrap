@@ -10,7 +10,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TAURI_DIR="$(dirname "$SCRIPT_DIR")"
-APPIMAGE="$TAURI_DIR/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage"
+case "$(uname -m)" in
+  aarch64 | arm64) BUNDLER_ARCH="aarch64" ;;
+  *) BUNDLER_ARCH="amd64" ;;
+esac
+APPIMAGE="$TAURI_DIR/src-tauri/target/release/bundle/appimage/Spool_${BUNDLER_ARCH}.AppImage"
 SETTINGS_DIR="${HOME}/homebrew/settings/spool-backup"
 SETTINGS_FILE="$SETTINGS_DIR/settings.json"
 

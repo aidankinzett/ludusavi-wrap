@@ -18,7 +18,19 @@
 set -euo pipefail
 
 REPO="aidankinzett/Spool"
-ASSET="Spool_amd64.AppImage"
+
+# Spool publishes one AppImage per architecture. Pick the one matching this
+# machine so an ARM handheld doesn't silently install the x86_64 build.
+case "$(uname -m)" in
+  x86_64 | amd64) ASSET="Spool_amd64.AppImage" ;;
+  aarch64 | arm64) ASSET="Spool_aarch64.AppImage" ;;
+  *)
+    echo "Unsupported architecture: $(uname -m)." >&2
+    echo "Spool ships AppImages for x86_64 and aarch64 only." >&2
+    exit 1
+    ;;
+esac
+
 DOWNLOAD_URL="https://github.com/$REPO/releases/latest/download/$ASSET"
 
 INSTALL_DIR="${INSTALL_DIR:-$HOME/Applications}"

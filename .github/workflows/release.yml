@@ -33,9 +33,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.bun-cache
-          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri/bun.lock') }}
           restore-keys: |
-            bun-${{ runner.os }}-
+            bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Setup Rust toolchain
         uses: dtolnay/rust-toolchain@stable
@@ -63,10 +63,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache
-          key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          key: sccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            sccache-${{ runner.os }}-${{ github.ref_name }}-
-            sccache-${{ runner.os }}-
+            sccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -109,7 +109,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: tauri/src-tauri/binaries
-          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+          key: sidecars-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
 
       - name: Download sidecars
         if: steps.cache-sidecars.outputs.cache-hit != 'true'
@@ -150,7 +150,25 @@ jobs:
           if-no-files-found: error
 
   build-linux:
-    runs-on: ubuntu-22.04
+    # One leg per Linux architecture. Tauri cannot cross-compile ARM
+    # AppImages (linuxdeploy has no cross support), so aarch64 has to build
+    # on a native ARM runner — free for public repos.
+    name: build-linux (${{ matrix.appimage_arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            appimage_arch: x86_64
+            bundler_arch: amd64
+            asset: Spool_amd64.AppImage
+            artifact: linux-bundle
+          - runner: ubuntu-22.04-arm
+            appimage_arch: aarch64
+            bundler_arch: aarch64
+            asset: Spool_aarch64.AppImage
+            artifact: linux-arm-bundle
     env:
       SCCACHE_DIR: "${{ github.workspace }}/.sccache"
       RUSTC_WRAPPER: "sccache"
@@ -175,10 +193,10 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.sccache
-          key: sccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          key: sccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-${{ github.sha }}
           restore-keys: |
-            sccache-${{ runner.os }}-${{ github.ref_name }}-
-            sccache-${{ runner.os }}-
+            sccache-${{ runner.os }}-${{ runner.arch }}-${{ github.ref_name }}-
+            sccache-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Rust cache
         uses: Swatinem/rust-cache@v2
@@ -213,9 +231,9 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ${{ github.workspace }}/.bun-cache
-          key: bun-${{ runner.os }}-${{ hashFiles('tauri/bun.lock') }}
+          key: bun-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri/bun.lock') }}
           restore-keys: |
-            bun-${{ runner.os }}-
+            bun-${{ runner.os }}-${{ runner.arch }}-
 
       - name: Install frontend dependencies
         working-directory: tauri
@@ -226,12 +244,23 @@ jobs:
         uses: actions/cache@v6
         with:
           path: tauri/src-tauri/binaries
-          key: sidecars-${{ runner.os }}-${{ hashFiles('tauri/scripts/download-sidecars.js') }}
+          # runner.arch is part of the key: the sidecars are native binaries,
+          # so an ARM leg restoring the x86_64 cache would silently bundle
+          # x86_64 ludusavi/rclone into the aarch64 AppImage.
+          key: sidecars-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('tauri/scripts/download-sidecars.js', 'tauri/scripts/build-ludusavi.sh') }}
 
       - name: Download sidecars
         if: steps.cache-sidecars.outputs.cache-hit != 'true'
         working-directory: tauri
         run: bun run download-sidecars
+
+      # ludusavi publishes no aarch64 Linux binary, so the download above only
+      # fetches rclone on ARM. Compile ludusavi at the same pinned version.
+      - name: Build ludusavi sidecar (aarch64)
+        if: matrix.appimage_arch == 'aarch64' && steps.cache-sidecars.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get install -y gcc libxcb-composite0-dev libgtk-3-dev
+          bash tauri/scripts/build-ludusavi.sh
 
       - name: Build Tauri AppImage
         # No tagName here — we publish in the release job after the
@@ -261,7 +290,7 @@ jobs:
         working-directory: tauri/src-tauri/target/release/bundle/appimage
         run: |
           set -euo pipefail
-          APPIMAGE=$(ls Spool_*_amd64.AppImage)
+          APPIMAGE=$(ls Spool_*_${{ matrix.bundler_arch }}.AppImage)
           chmod +x "$APPIMAGE"
           ./"$APPIMAGE" --appimage-extract >/dev/null
           rm -f squashfs-root/usr/lib/libwayland-client.so.* \
@@ -269,10 +298,10 @@ jobs:
                 squashfs-root/usr/lib/libwayland-egl.so.* \
                 squashfs-root/usr/lib/libwayland-server.so.*
           wget -q -O appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-${{ matrix.appimage_arch }}.AppImage
           chmod +x appimagetool
           rm "$APPIMAGE" "$APPIMAGE.sig"
-          ARCH=x86_64 ./appimagetool --appimage-extract-and-run squashfs-root Spool_amd64.AppImage
+          ARCH=${{ matrix.appimage_arch }} ./appimagetool --appimage-extract-and-run squashfs-root ${{ matrix.asset }}
           rm -rf squashfs-root appimagetool
 
       - name: Re-sign repacked AppImage
@@ -285,9 +314,10 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
-          bunx @tauri-apps/cli signer sign Spool_amd64.AppImage
+          bunx @tauri-apps/cli signer sign ${{ matrix.asset }}
 
       - name: Package raw binary tarball (for AUR spool-bin)
+        if: matrix.appimage_arch == 'x86_64'
         # The AppImage bundles its own libs (and we strip libwayland from it);
         # the AUR package instead wants the raw binary linking against system
         # libs. Ship binary + icon; the PKGBUILD generates the .desktop.
@@ -309,11 +339,18 @@ jobs:
       - name: Upload Linux bundle
         uses: actions/upload-artifact@v7
         with:
-          name: linux-bundle
+          name: ${{ matrix.artifact }}
           path: |
-            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage
-            tauri/src-tauri/target/release/bundle/appimage/Spool_amd64.AppImage.sig
-            tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
+            tauri/src-tauri/target/release/bundle/appimage/${{ matrix.asset }}
+            tauri/src-tauri/target/release/bundle/appimage/${{ matrix.asset }}.sig
+          if-no-files-found: error
+
+      - name: Upload AUR tarball
+        if: matrix.appimage_arch == 'x86_64'
+        uses: actions/upload-artifact@v7
+        with:
+          name: linux-tarball
+          path: tauri/src-tauri/target/release/bundle/appimage/spool-*-x86_64.tar.gz
           if-no-files-found: error
 
   release:
@@ -384,11 +421,14 @@ jobs:
           WIN_SIG=$(ls artifacts/windows-bundle/Spool_*_x64-setup.exe.sig)
           LIN_APP=$(ls artifacts/linux-bundle/Spool_amd64.AppImage)
           LIN_SIG=$(ls artifacts/linux-bundle/Spool_amd64.AppImage.sig)
-          LIN_TAR=$(ls artifacts/linux-bundle/spool-*-x86_64.tar.gz)
+          LIN_TAR=$(ls artifacts/linux-tarball/spool-*-x86_64.tar.gz)
+          ARM_APP=$(ls artifacts/linux-arm-bundle/Spool_aarch64.AppImage)
+          ARM_SIG=$(ls artifacts/linux-arm-bundle/Spool_aarch64.AppImage.sig)
           gh release create "$TAG_NAME" \
             --title "Spool $TAG_NAME" \
             --notes-file notes.md \
-            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR"
+            "$WIN_EXE" "$WIN_SIG" "$LIN_APP" "$LIN_SIG" "$LIN_TAR" \
+            "$ARM_APP" "$ARM_SIG"
 
       - name: Build and upload latest.json updater manifest
         # tauri-action only emits latest.json on its own release-creation
@@ -414,6 +454,11 @@ jobs:
           LIN_APP_NAME=$(basename "$LIN_APP_FILE")
           LIN_SIG=$(cat "$LIN_SIG_FILE")
 
+          ARM_APP_FILE=$(ls artifacts/linux-arm-bundle/Spool_aarch64.AppImage)
+          ARM_SIG_FILE="${ARM_APP_FILE}.sig"
+          ARM_APP_NAME=$(basename "$ARM_APP_FILE")
+          ARM_SIG=$(cat "$ARM_SIG_FILE")
+
           PUB_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
           BASE_URL="https://github.com/$REPO/releases/download/$TAG"
 
@@ -434,13 +479,16 @@ jobs:
             --arg win_url  "$BASE_URL/$WIN_EXE_NAME" \
             --arg lin_sig  "$LIN_SIG" \
             --arg lin_url  "$BASE_URL/$LIN_APP_NAME" \
+            --arg arm_sig  "$ARM_SIG" \
+            --arg arm_url  "$BASE_URL/$ARM_APP_NAME" \
             '{
               version: $version,
               notes: $notes,
               pub_date: $pub_date,
               platforms: {
                 "windows-x86_64": { signature: $win_sig, url: $win_url },
-                "linux-x86_64":   { signature: $lin_sig, url: $lin_url }
+                "linux-x86_64":   { signature: $lin_sig, url: $lin_url },
+                "linux-aarch64":  { signature: $arm_sig, url: $arm_url }
               }
             }' > latest.json
 

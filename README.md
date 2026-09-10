@@ -83,7 +83,9 @@ from Spool's settings.
 Grab the latest build from the [Releases](../../releases) page:
 
 * **Windows** — the `Spool_<version>_x64-setup.exe` installer.
-* **Linux** — the `Spool_amd64.AppImage`.
+* **Linux (x86_64)** — the `Spool_amd64.AppImage`.
+* **Linux (ARM64)** — the `Spool_aarch64.AppImage`, for ARM handhelds such as
+  the AYN Thor running [Armada](https://armadaos.dev/).
 
 Both platforms auto-update in place.
 

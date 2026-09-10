@@ -63,7 +63,9 @@ bun tauri build
 #   tauri/src-tauri/target/release/bundle/nsis/Spool_<version>_x64-setup.exe
 ```
 
-On Linux the release build produces an AppImage (`Spool_*_amd64.AppImage`).
+On Linux the release build produces an AppImage — `Spool_*_amd64.AppImage` on
+x86_64, `Spool_*_aarch64.AppImage` on ARM64. Tauri cannot cross-compile ARM
+AppImages, so an aarch64 build has to run on an ARM machine.
 
 ## Run the checks locally
 
