@@ -63,32 +63,18 @@ mod linux {
     use zbus::zvariant::OwnedFd;
     use zbus::{Connection, Proxy};
 
-    const LOGIND_DEST: &str = "org.freedesktop.login1";
-    const LOGIND_PATH: &str = "/org/freedesktop/login1";
-    const LOGIND_IFACE: &str = "org.freedesktop.login1.Manager";
-
     /// Take a `delay` inhibitor on `sleep`. logind blocks the actual suspend
     /// until this fd is dropped (up to `InhibitDelayMaxSec`), giving us a window
     /// to mark the lock suspended before everything freezes.
     async fn take_delay_inhibitor(proxy: &Proxy<'_>) -> Option<OwnedFd> {
-        match proxy
-            .call::<_, _, OwnedFd>(
-                "Inhibit",
-                &(
-                    "sleep",
-                    "Spool",
-                    "Marking game session lock as suspended",
-                    "delay",
-                ),
-            )
-            .await
-        {
-            Ok(fd) => Some(fd),
-            Err(e) => {
-                tracing::warn!(error = %e, "suspend: failed to take logind delay inhibitor");
-                None
-            }
-        }
+        crate::logind::inhibit(
+            proxy,
+            "sleep",
+            "Spool",
+            "Marking game session lock as suspended",
+            "delay",
+        )
+        .await
     }
 
     pub async fn watch(app: AppHandle, game_name: String, suspended_secs: SuspendedSecs) {
@@ -99,7 +85,7 @@ mod linux {
                 return;
             }
         };
-        let proxy = match Proxy::new(&conn, LOGIND_DEST, LOGIND_PATH, LOGIND_IFACE).await {
+        let proxy = match crate::logind::manager_proxy(&conn).await {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!(error = %e, "suspend: logind proxy failed — suspend handling disabled");

@@ -128,6 +128,14 @@ async fn run_impl(
     // Run the remaining setup and installer execution in an async block
     // to catch any error and perform cleanup of prefix_root and install_dir.
     let run_steps = async {
+        // Keep the machine awake for the whole flow, not just the installer:
+        // init_prefix() below can download the Steam Linux Runtime + Proton on
+        // first run (multi-minute), and suspending mid-install can leave a
+        // half-written game. Held until this async block returns. Desktop power
+        // UIs (e.g. KDE's battery applet) show this as Spool blocking sleep.
+        let _sleep_guard =
+            crate::sleep_inhibit::SleepInhibitor::acquire(&format!("Installing {game_name}")).await;
+
         std::fs::create_dir_all(&prefix_root)
             .map_err(|e| AppError::Other(format!("failed to create prefix dir: {e}")))?;
 
@@ -151,13 +159,6 @@ async fn run_impl(
             "install:drive-ready",
             format!("{}:", letter.to_ascii_uppercase()),
         );
-
-        // Keep the machine awake for the installer's lifetime — it's a long,
-        // often interactive job and suspending mid-install can leave a
-        // half-written game. Held until this async block returns. Desktop power
-        // UIs (e.g. KDE's battery applet) show this as Spool blocking sleep.
-        let _sleep_guard =
-            crate::sleep_inhibit::SleepInhibitor::acquire(&format!("Installing {game_name}")).await;
 
         // Run the installer and wait for it to exit. run_game handles strip-appimage
         // env + cwd; the setup.exe's window staying open blocks here intentionally.

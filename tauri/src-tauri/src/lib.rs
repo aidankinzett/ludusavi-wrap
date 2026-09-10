@@ -40,6 +40,7 @@ mod headless;
 mod lan;
 mod launcher;
 mod library;
+mod logind;
 mod ludusavi;
 mod ludusavi_config;
 mod metadata;
