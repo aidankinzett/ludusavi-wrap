@@ -229,7 +229,11 @@ jobs:
       - name: Install Linux system dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev
+          # xdg-utils provides /usr/bin/xdg-open, which tauri-bundler copies
+          # into the AppImage. It's preinstalled on the x86_64 runner image but
+          # not on the ARM one, so name it explicitly rather than relying on
+          # whatever the image happens to ship.
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libudev-dev xdg-utils
 
       - name: Resolve version
         id: ver

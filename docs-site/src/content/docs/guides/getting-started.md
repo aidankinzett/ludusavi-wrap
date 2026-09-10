@@ -16,7 +16,8 @@ distros — Bazzite, CachyOS, SteamOS).
   [Tauri prerequisites guide](https://v2.tauri.app/start/prerequisites/)
 - **Linux only:** the WebView + tray system libraries —
   `libwebkit2gtk-4.1-dev`, `libappindicator3-dev`, and `librsvg2-dev` (add
-  `patchelf` if you build an AppImage). `umu-launcher` (`umu-run`) on the host
+  `patchelf` and `xdg-utils` if you build an AppImage — the bundler copies
+  `/usr/bin/xdg-open` into it). `umu-launcher` (`umu-run`) on the host
   is optional — only needed to test the Proton runner, and is the one Linux
   dependency that is *not* bundled.
 
