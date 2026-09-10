@@ -58,6 +58,7 @@ mod runner;
 mod save_template;
 mod session;
 mod size_backfill;
+mod sleep_inhibit;
 mod steam;
 mod steam_cdn;
 mod steam_collections;

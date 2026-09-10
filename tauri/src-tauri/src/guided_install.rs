@@ -152,6 +152,13 @@ async fn run_impl(
             format!("{}:", letter.to_ascii_uppercase()),
         );
 
+        // Keep the machine awake for the installer's lifetime — it's a long,
+        // often interactive job and suspending mid-install can leave a
+        // half-written game. Held until this async block returns. Desktop power
+        // UIs (e.g. KDE's battery applet) show this as Spool blocking sleep.
+        let _sleep_guard =
+            crate::sleep_inhibit::SleepInhibitor::acquire(&format!("Installing {game_name}")).await;
+
         // Run the installer and wait for it to exit. run_game handles strip-appimage
         // env + cwd; the setup.exe's window staying open blocks here intentionally.
         //

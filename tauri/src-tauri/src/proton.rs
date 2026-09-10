@@ -758,6 +758,16 @@ pub async fn run_exe_in_prefix_core(
     // installer lifetime — same as the guided installer (`guided_install.rs`) —
     // so a launch or disk-wipe can't race a patch that's still writing. If umu
     // wedges, quitting Spool releases the lock (the OS frees it on exit).
+    //
+    // Hold a sleep/idle inhibitor for the run so the machine doesn't suspend
+    // mid-patch; released when `_sleep_guard` drops at the end of this function.
+    // Desktop power UIs (e.g. KDE's battery applet) show it as Spool blocking
+    // sleep.
+    let _sleep_guard = crate::sleep_inhibit::SleepInhibitor::acquire(&format!(
+        "Running {name} in {game_id}'s Proton prefix"
+    ))
+    .await;
+
     let result = crate::process::run_game(
         &exe,
         crate::process::LaunchSpec::Proton {
