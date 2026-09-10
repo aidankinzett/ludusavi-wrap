@@ -65,12 +65,11 @@ Steam Deck** it needs a home-directory build because the root is read-only. See
 [Installing umu-launcher](/guides/installing-umu/) for per-distro steps.
 Settings → Compatibility also checks whether it's present and links the guide.
 
-On **ARM64** this doesn't work yet: umu-launcher has no usable aarch64 build,
-so Windows `.exe` games can't be launched there. Native Linux games work, and
-so do x86_64 Linux games on distros that run them through FEX — Armada
-registers FEX system-wide, so Spool launches them like any other native game.
-Everything else — the library, save backup and restore, cloud sync, and LAN
-sharing — works the same on ARM as anywhere else.
+On **ARM64** no distro packages umu-launcher, but it runs fine there and
+[Heroic](https://heroicgameslauncher.com/) downloads its own copy — Spool finds
+that automatically, so installing Heroic is usually enough. x86_64 Linux games
+also work on distros that run them through FEX: Armada registers FEX
+system-wide, so Spool launches them like any other native game.
 :::
 
 ## How Spool runs

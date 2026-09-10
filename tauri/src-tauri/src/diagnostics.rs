@@ -176,13 +176,14 @@ fn extract_field<'a>(content: &'a str, key: &str) -> &'a str {
 // ── Per-distro install hints ──────────────────────────────────────────────────
 
 fn install_hint_umu(distro: &Distro) -> String {
-    // umu-launcher's aarch64 support isn't usable yet: most distros package it
-    // for x86_64 only, and the ARM handheld images that do ship a Proton build
-    // (Armada and friends) have a read-only root anyway. Handing out a package
-    // command that cannot work is worse than saying so, so short-circuit the
-    // per-distro hints and let the docs link explain the state of play.
+    // No distro packages umu-launcher for aarch64, and the ARM handheld images
+    // that ship a Proton build have a read-only root anyway — so the per-distro
+    // package commands below can't work there. umu itself runs fine on aarch64;
+    // the usual way to get one is Heroic, which downloads its own copy into its
+    // tools dir. `resolve_umu_run` finds that automatically, so reaching this
+    // hint on ARM means Heroic isn't installed either.
     if cfg!(target_arch = "aarch64") {
-        return "# Windows games aren't supported on ARM yet — see the guide below".to_string();
+        return "# Install Heroic, or point Spool at an existing umu-run below".to_string();
     }
     match distro {
         // SteamOS root is read-only and AUR isn't available, so there's no
